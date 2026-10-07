@@ -80,7 +80,12 @@ export const createProject = async (req, res) => {
 export const updateProject = async (req, res) => {
     try {
         const {userId} = await req.auth();
-        const {workspaceId, description, name, status, start_date, end_date, team_members, team_lead, progress, priority} = req.body;
+        const {id, workspaceId, description, name, status, start_date, end_date, progress, priority} = req.body;
+
+        const existing = await prisma.project.findUnique({ where: {id} })
+        if(!existing || existing.workspaceId !== workspaceId){
+            return res.status(404).json({message: "Project not found"});
+        }
 
         // check if user has admin role for workspace
         const workspace = await prisma.workspace.findUnique({
@@ -92,22 +97,13 @@ export const updateProject = async (req, res) => {
             return res.status(404).json({message: "Workspace not found"});
         }
 
-        if(!workspace.members.some((member) => member.userId === userId && member.role === 'ADMIN')){
-            const project = await prisma.project.findUnique({
-                where: {id}
-            })
-
-            if(!project){
-                return res.status(404).json({message: "Project not found"});
-            } else if(project.team_lead !== userId){
-                return res.status(403).json({message: "You dont have permission to update this project"});
-            }
+        if(!workspace.members.some((member) => member.userId === userId && member.role === 'ADMIN') && existing.team_lead !== userId){
+            return res.status(403).json({message: "You dont have permission to update this project"});
         }
 
         const project = await prisma.project.update({
             where: {id},
             data: {
-                workspaceId,
                 name,
                 description,
                 status,

@@ -1,9 +1,8 @@
 import { Inngest } from "inngest";
-import { PrismaClient } from '@prisma/client';
+import prisma from "../configs/prisma.js";
 //import { assign } from "nodemailer/lib/shared";
 import sendEmail from "../configs/nodemailer.js";
 
-const prisma = new PrismaClient();  
 // Create a client to send and receive events
 export const inngest = new Inngest({ id: "Zip-crm" });
 
@@ -18,7 +17,7 @@ const syncUserCreation = inngest.createFunction(
             data: {
                 id: data.id,
                 email: data?.email_addresses[0]?.email_address,
-                name:data?.first_name + " " + data?.last_name,
+                name: [data?.first_name, data?.last_name].filter(Boolean).join(' ') || data?.username || 'Unnamed user',
                 image: data?.image_url,
             }
         })
@@ -52,7 +51,7 @@ const syncUserUpdation = inngest.createFunction(
             },
             data: {
                 email: data?.email_addresses[0]?.email_address,
-                name:data?.first_name + ' ' + data?.last_name,
+                name: [data?.first_name, data?.last_name].filter(Boolean).join(' ') || data?.username || 'Unnamed user',
                 image: data?.image_url,
             }
         })

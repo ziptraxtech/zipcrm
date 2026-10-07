@@ -1,8 +1,11 @@
 export const protect = async (req, res, next) => {
     try {
-        // Development mode - bypass auth if CLERK_SECRET_KEY is not set
         if (!process.env.CLERK_SECRET_KEY) {
-            // Set a test user for development
+            // Local development only - bypass auth with a test user.
+            // Anywhere else, fail closed: these routes expose customer data.
+            if (process.env.NODE_ENV !== 'development') {
+                return res.status(500).json({ message: "Server auth is not configured" });
+            }
             req.auth = () => Promise.resolve({ userId: 'dev-user-123' });
             return next();
         }
