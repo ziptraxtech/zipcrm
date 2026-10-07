@@ -3,8 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { useSelector } from "react-redux";
 import { format } from "date-fns";
 import toast from "react-hot-toast";
-import { Inbox, Search, LayoutList, Columns3, ChevronLeft, ChevronRight } from "lucide-react";
-import { LEAD_STATUSES, statusColors, useCrmApi, errorMessage } from "../components/crm/crm";
+import { Inbox, Search, LayoutList, Columns3, ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { LEAD_CHANNELS, LEAD_STATUSES, statusColors, useCrmApi, errorMessage } from "../components/crm/crm";
+import LeadFormDialog from "../components/crm/LeadFormDialog";
 import { SourceBadge } from "../components/crm/leadUi";
 
 const PAGE_SIZE = 25;
@@ -18,6 +19,9 @@ const Leads = () => {
     const [view, setView] = useState("table");
     const [source, setSource] = useState("");
     const [status, setStatus] = useState("");
+    const [channel, setChannel] = useState("");
+    const [showAdd, setShowAdd] = useState(false);
+    const [reloadKey, setReloadKey] = useState(0);
     const [search, setSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
     const [from, setFrom] = useState("");
@@ -32,7 +36,7 @@ const Leads = () => {
     }, [search]);
 
     // back to page 1 whenever the filters change
-    useEffect(() => { setPage(1) }, [source, status, debouncedSearch, from, view]);
+    useEffect(() => { setPage(1) }, [source, status, channel, debouncedSearch, from, view]);
 
     useEffect(() => {
         if (!workspaceId) return;
@@ -44,6 +48,7 @@ const Leads = () => {
                 source: source || undefined,
                 status: view === "board" ? undefined : status || undefined,
                 q: debouncedSearch || undefined,
+                channel: channel || undefined,
                 from: from ? new Date(from).toISOString() : undefined,
                 page, limit,
             }
@@ -52,7 +57,7 @@ const Leads = () => {
             .catch((error) => { if (!ignore) toast.error(errorMessage(error)) })
             .finally(() => { if (!ignore) setLoading(false) });
         return () => { ignore = true };
-    }, [request, workspaceId, source, status, debouncedSearch, from, page, view]);
+    }, [request, workspaceId, source, status, channel, debouncedSearch, from, page, view, reloadKey]);
 
     const leadKey = (lead) => `${lead.source}:${lead.source_id}`;
 
@@ -84,8 +89,9 @@ const Leads = () => {
             <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
                 <div>
                     <h1 className="text-xl sm:text-2xl font-semibold text-gray-900 dark:text-white mb-1">Leads</h1>
-                    <p className="text-gray-500 dark:text-zinc-400 text-sm">Enquiries from the EVChamp website and app</p>
+                    <p className="text-gray-500 dark:text-zinc-400 text-sm">Enquiries from the EVChamp website and app, plus leads your team adds from Instagram, WhatsApp and more</p>
                 </div>
+                <div className="flex items-center gap-3">
                 <div className="flex rounded border border-gray-300 dark:border-zinc-700 overflow-hidden text-sm">
                     {[["table", LayoutList, "Table"], ["board", Columns3, "Board"]].map(([key, icon, label]) => {
                         const Icon = icon;
@@ -96,7 +102,16 @@ const Leads = () => {
                         );
                     })}
                 </div>
+                <button onClick={() => setShowAdd(true)} className="flex items-center gap-2 px-4 py-1.5 rounded text-sm bg-gradient-to-br from-blue-500 to-blue-600 hover:opacity-90 text-white">
+                    <Plus className="size-4" /> Add Lead
+                </button>
+                </div>
             </div>
+
+            {showAdd && (
+                <LeadFormDialog onClose={() => setShowAdd(false)}
+                    onSaved={({ sourceId }) => { setShowAdd(false); setReloadKey((k) => k + 1); navigate(`/leadDetails?source=manual&id=${sourceId}`) }} />
+            )}
 
             {/* Source tabs */}
             <div className="flex flex-wrap gap-2">
@@ -119,6 +134,10 @@ const Leads = () => {
                         {LEAD_STATUSES.map((s) => <option key={s} value={s}>{s} ({data.countsByStatus[s] || 0})</option>)}
                     </select>
                 )}
+                <select value={channel} onChange={(e) => setChannel(e.target.value)} className="text-sm rounded-md border border-gray-300 dark:border-zinc-800 dark:bg-zinc-900 text-gray-900 dark:text-white py-2 px-3">
+                    <option value="">All channels</option>
+                    {LEAD_CHANNELS.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+                </select>
                 <label className="flex items-center gap-2 text-sm text-gray-500 dark:text-zinc-400">
                     Since
                     <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="text-sm rounded-md border border-gray-300 dark:border-zinc-800 dark:bg-zinc-900 text-gray-900 dark:text-white py-1.5 px-2" />
@@ -153,7 +172,7 @@ const Leads = () => {
                                             <p className="text-zinc-900 dark:text-white font-medium">{lead.name || "—"}</p>
                                             <p className="text-xs text-gray-500 dark:text-zinc-400">{[lead.email, lead.phone].filter(Boolean).join(" · ")}</p>
                                         </td>
-                                        <td className="px-4 py-2.5"><SourceBadge source={lead.source} /></td>
+                                        <td className="px-4 py-2.5"><SourceBadge source={lead.source} channel={lead.channel} /></td>
                                         <td className="px-4 py-2.5 text-gray-600 dark:text-zinc-300 max-w-xs truncate" title={lead.summary}>{lead.summary}</td>
                                         <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
                                             <select value={lead.status} onChange={(e) => updateLead(lead, { status: e.target.value })} className={`text-xs rounded-md px-2 py-1 border-0 ${statusColors[lead.status]}`}>
@@ -209,7 +228,7 @@ const Leads = () => {
                                             <p className="text-sm font-medium text-zinc-900 dark:text-white truncate">{lead.name || lead.email}</p>
                                             <p className="text-xs text-gray-500 dark:text-zinc-400 line-clamp-2">{lead.summary}</p>
                                             <div className="flex items-center justify-between">
-                                                <SourceBadge source={lead.source} />
+                                                <SourceBadge source={lead.source} channel={lead.channel} />
                                                 {lead.owner_name && <span className="text-xs text-gray-500 dark:text-zinc-400 truncate">{lead.owner_name}</span>}
                                             </div>
                                         </div>

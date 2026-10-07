@@ -22,9 +22,10 @@ const q = async (text, params = []) => (await db.query(text, params)).rows;
 
 // zipcrm workspace with one member (u1) and one outsider (u2)
 await db.exec(`
-  INSERT INTO crm."User"(id,name,email,"updatedAt") VALUES ('u1','Asha','asha@z.co',now()),('u2','Outsider','o@x.co',now());
-  INSERT INTO crm."Workspace"(id,name,slug,"ownerId","updatedAt") VALUES ('ws1','ZipSure','zipsure','u1',now());
-  INSERT INTO crm."WorkspaceMember"(id,"userId","workspaceId",role) VALUES ('m1','u1','ws1','ADMIN');
+  INSERT INTO crm."User"(id,name,email,"updatedAt") VALUES ('u1','Asha','asha@z.co',now()),('u2','Outsider','o@x.co',now()),
+    ('u3','Meena','meena@z.co',now()),('u4','Other Co','oc@y.co',now());
+  INSERT INTO crm."Workspace"(id,name,slug,"ownerId","updatedAt") VALUES ('ws1','ZipSure','zipsure','u1',now()),('ws2','OtherCo','otherco','u4',now());
+  INSERT INTO crm."WorkspaceMember"(id,"userId","workspaceId",role) VALUES ('m1','u1','ws1','ADMIN'),('m3','u3','ws1','MEMBER'),('m4','u4','ws2','ADMIN');
 `);
 // EVChamp rows, including the same email across two sources
 await db.exec(`
@@ -51,6 +52,20 @@ const stateKey = (where) => where.workspaceId_source_sourceId;
 const findState = async ({workspaceId, source, sourceId}) =>
     (await q(`SELECT * FROM crm."LeadState" WHERE "workspaceId"=$1 AND source=$2 AND "sourceId"=$3`, [workspaceId, source, sourceId]))[0];
 const fakePrisma = {
+    user: {
+        findUnique: async ({where: {id}}) => (await q(`SELECT * FROM crm."User" WHERE id=$1`, [id]))[0] || null,
+    },
+    manualLead: {
+        findUnique: async ({where: {id}}) => (await q(`SELECT * FROM crm."ManualLead" WHERE id=$1`, [id]))[0] || null,
+        create: async ({data}) => (await q(
+            `INSERT INTO crm."ManualLead"("workspaceId",channel,name,email,phone,city,company,notes,"createdById","updatedAt")
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now()) RETURNING *`,
+            [data.workspaceId, data.channel, data.name, data.email, data.phone, data.city, data.company, data.notes, data.createdById]))[0],
+        update: async ({where: {id}, data}) => (await q(
+            `UPDATE crm."ManualLead" SET channel=$2,name=$3,email=$4,phone=$5,city=$6,company=$7,notes=$8,"updatedAt"=now() WHERE id=$1 RETURNING *`,
+            [id, data.channel, data.name, data.email, data.phone, data.city, data.company, data.notes]))[0],
+        delete: async ({where: {id}}) => (await q(`DELETE FROM crm."ManualLead" WHERE id=$1 RETURNING *`, [id]))[0],
+    },
     workspaceMember: {
         findUnique: async ({where: {userId_workspaceId: {userId, workspaceId}}}) =>
             (await q(`SELECT * FROM crm."WorkspaceMember" WHERE "userId"=$1 AND "workspaceId"=$2`, [userId, workspaceId]))[0] || null,
@@ -64,6 +79,12 @@ const fakePrisma = {
                 notes: await q(`SELECT * FROM crm."LeadNote" WHERE "leadStateId"=$1 ORDER BY "createdAt" DESC`, [state.id]),
                 tasks: await q(`SELECT * FROM crm."Task" WHERE "leadStateId"=$1`, [state.id]),
             };
+        },
+        create: async ({data}) => (await q(
+            `INSERT INTO crm."LeadState"(id,"workspaceId",source,"sourceId",status,"ownerId","updatedAt") VALUES ($1,$2,$3,$4,$5,$6,now()) RETURNING *`,
+            [randomUUID(), data.workspaceId, data.source, data.sourceId, data.status, data.ownerId]))[0],
+        deleteMany: async ({where}) => {
+            await q(`DELETE FROM crm."LeadState" WHERE "workspaceId"=$1 AND source=$2 AND "sourceId"=$3`, [where.workspaceId, where.source, where.sourceId]);
         },
         upsert: async ({where, create, update}) => {
             const k = stateKey(where);
@@ -188,5 +209,77 @@ test('customers with purchases and lead counts', async () => {
 test('zipcrm data stays in the crm schema; Zeflash public."User" untouched', async () => {
     assert.deepEqual(await q(`SELECT email FROM public."User"`), [{email: 'WRONG-TABLE@zeflash.io'}]);
     const tables = (await q(`SELECT table_name FROM information_schema.tables WHERE table_schema='crm' ORDER BY 1`)).map((r) => r.table_name);
-    assert.deepEqual(tables, ['Comment', 'LeadNote', 'LeadState', 'Project', 'ProjectMember', 'Task', 'User', 'Workspace', 'WorkspaceMember']);
+    assert.deepEqual(tables, ['Comment', 'LeadNote', 'LeadState', 'ManualLead', 'Project', 'ProjectMember', 'Task', 'User', 'Workspace', 'WorkspaceMember']);
+});
+
+// ---- Manually added leads ----
+
+const addLead = (body, userId) => call(leads.createManualLead, {body: {workspaceId: 'ws1', ...body}, userId});
+
+test('a member adds a WhatsApp lead; it lists with its channel and can be filtered by channel', async () => {
+    const before = (await call(leads.getLeads, {query: {workspaceId: 'ws1'}})).json.total;
+    const r = await addLead({name: ' Priya Shah ', phone: '+91 90000 11111', channel: 'WHATSAPP', city: 'Pune', notes: 'Wants a franchise in Baner', ownerId: 'u3'}, 'u3');
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.source, 'manual');
+
+    let list = await call(leads.getLeads, {query: {workspaceId: 'ws1'}});
+    assert.equal(list.json.total, before + 1);
+    const priya = list.json.leads.find((l) => l.source === 'manual');
+    assert.equal(priya.name, 'Priya Shah');
+    assert.equal(priya.channel, 'WHATSAPP');
+    assert.equal(priya.summary, 'Wants a franchise in Baner');
+    assert.equal(priya.owner_name, 'Meena');
+    assert.equal(list.json.leads[0].source, 'manual'); // newest first
+
+    list = await call(leads.getLeads, {query: {workspaceId: 'ws1', channel: 'WHATSAPP'}});
+    assert.deepEqual(list.json.leads.map((l) => l.name), ['Priya Shah']);
+    list = await call(leads.getLeads, {query: {workspaceId: 'ws1', channel: 'INSTAGRAM'}});
+    assert.equal(list.json.total, 0);
+
+    const detail = await call(leads.getLead, {params: {source: 'manual', sourceId: String(r.json.sourceId)}, query: {workspaceId: 'ws1'}});
+    assert.equal(detail.status, 200, JSON.stringify(detail.json));
+    assert.equal(detail.json.raw.added_by, 'Meena');
+});
+
+test('manual leads are private to their workspace', async () => {
+    const [{id}] = await q(`SELECT id FROM crm."ManualLead" WHERE name='Priya Shah'`);
+    const list = await call(leads.getLeads, {query: {workspaceId: 'ws2'}, userId: 'u4'});
+    assert.equal(list.json.leads.filter((l) => l.source === 'manual').length, 0);
+    assert.equal(list.json.total, TOTAL); // still sees the shared EVChamp leads
+    const detail = await call(leads.getLead, {params: {source: 'manual', sourceId: String(id)}, query: {workspaceId: 'ws2'}, userId: 'u4'});
+    assert.equal(detail.status, 404);
+    const patch = await call(leads.updateLead, {params: {source: 'manual', sourceId: String(id)}, body: {workspaceId: 'ws2', status: 'WON'}, userId: 'u4'});
+    assert.equal(patch.status, 404);
+});
+
+test('validation: name, phone or email, and a known channel', async () => {
+    assert.equal((await addLead({phone: '1', channel: 'WHATSAPP'}, 'u1')).status, 400);
+    assert.equal((await addLead({name: 'No Contact', channel: 'WHATSAPP'}, 'u1')).status, 400);
+    assert.equal((await addLead({name: 'Bad Mail', email: 'nope', channel: 'EMAIL'}, 'u1')).status, 400);
+    assert.equal((await addLead({name: 'No Channel', phone: '1'}, 'u1')).status, 400);
+    assert.equal((await addLead({name: 'Fake Channel', phone: '1', channel: 'MYSPACE'}, 'u1')).status, 400);
+    assert.equal((await addLead({name: 'Outsider', phone: '1', channel: 'OTHER'}, 'u2')).status, 403);
+});
+
+test('only the person who added a lead, or an admin, can edit or delete it', async () => {
+    const admins = await addLead({name: 'Insta Lead', email: 'insta@ex.com', channel: 'INSTAGRAM'}, 'u1');
+    const id = String(admins.json.sourceId);
+    // member u3 cannot edit or delete the admin's lead
+    let r = await call(leads.updateManualLead, {params: {id}, body: {workspaceId: 'ws1', name: 'Hacked', email: 'insta@ex.com', channel: 'INSTAGRAM'}, userId: 'u3'});
+    assert.equal(r.status, 403);
+    r = await call(leads.deleteManualLead, {params: {id}, query: {workspaceId: 'ws1'}, userId: 'u3'});
+    assert.equal(r.status, 403);
+    // the admin edits their own lead
+    r = await call(leads.updateManualLead, {params: {id}, body: {workspaceId: 'ws1', name: 'Insta Lead', email: 'insta@ex.com', phone: '999', channel: 'INSTAGRAM'}, userId: 'u1'});
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.lead.phone, '999');
+
+    // the admin can delete the member's lead, and its CRM state goes with it
+    const [{id: priya}] = await q(`SELECT id FROM crm."ManualLead" WHERE name='Priya Shah'`);
+    await call(leads.updateLead, {params: {source: 'manual', sourceId: String(priya)}, body: {workspaceId: 'ws1', status: 'CONTACTED'}, userId: 'u3'});
+    r = await call(leads.deleteManualLead, {params: {id: String(priya)}, query: {workspaceId: 'ws1'}, userId: 'u1'});
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal((await q(`SELECT count(*)::int c FROM crm."LeadState" WHERE source='manual' AND "sourceId"=$1`, [priya]))[0].c, 0);
+    const list = await call(leads.getLeads, {query: {workspaceId: 'ws1', channel: 'WHATSAPP'}});
+    assert.equal(list.json.total, 0);
 });

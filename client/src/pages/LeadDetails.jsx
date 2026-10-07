@@ -3,15 +3,18 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useSelector } from "react-redux";
 import { format } from "date-fns";
 import toast from "react-hot-toast";
-import { ArrowLeft, Mail, Phone, MapPin, Building2, Plus, MessageCircle } from "lucide-react";
+import { ArrowLeft, Mail, Phone, MapPin, Building2, Plus, MessageCircle, Pencil, Trash2 } from "lucide-react";
+import LeadFormDialog from "../components/crm/LeadFormDialog";
 import CreateTaskDialog from "../components/CreateTaskDialog";
 import { LEAD_STATUSES, statusColors, useCrmApi, errorMessage } from "../components/crm/crm";
 import { StatusBadge, SourceBadge } from "../components/crm/leadUi";
 
 // raw EVChamp columns that are internal plumbing rather than useful lead info
-const HIDDEN_FIELDS = ["id", "clerk_user_id", "email_sent"];
+// channel and added_by are shown in the header for manually added leads
+const HIDDEN_FIELDS = ["id", "clerk_user_id", "email_sent", "workspaceId", "createdById", "channel", "added_by"];
 
-const humanize = (key) => key.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+const humanize = (key) => key.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+const isDateField = (key) => /(_at|At)$/.test(key);
 
 const LeadDetails = () => {
     const navigate = useNavigate();
@@ -26,6 +29,9 @@ const LeadDetails = () => {
     const [note, setNote] = useState("");
     const [value, setValue] = useState("");
     const [showCreateTask, setShowCreateTask] = useState(false);
+    const [showEdit, setShowEdit] = useState(false);
+    const [confirmDelete, setConfirmDelete] = useState(false);
+    const [reloadKey, setReloadKey] = useState(0);
 
     const basePath = `/api/leads/${source}/${sourceId}`;
 
@@ -38,7 +44,18 @@ const LeadDetails = () => {
             .catch((error) => { if (!ignore) toast.error(errorMessage(error)) })
             .finally(() => { if (!ignore) setLoading(false) });
         return () => { ignore = true };
-    }, [request, workspaceId, source, sourceId, basePath]);
+    }, [request, workspaceId, source, sourceId, basePath, reloadKey]);
+
+    const deleteLead = async () => {
+        try {
+            const { message } = await request("delete", `/api/leads/manual/${sourceId}`);
+            toast.success(message);
+            navigate("/leads");
+        } catch (error) {
+            toast.error(errorMessage(error));
+            setConfirmDelete(false);
+        }
+    };
 
     const update = async (changes) => {
         try {
@@ -92,12 +109,20 @@ const LeadDetails = () => {
                 <div className="space-y-2">
                     <div className="flex items-center gap-3 flex-wrap">
                         <h1 className="text-xl sm:text-2xl font-semibold">{lead.name || lead.email}</h1>
-                        <SourceBadge source={lead.source} />
+                        <SourceBadge source={lead.source} channel={lead.channel} />
                         {lead.source_status && <span className="text-xs text-gray-500 dark:text-zinc-400">EVChamp status: {lead.source_status}</span>}
+                        {lead.source === "manual" && (
+                            <span className="text-xs text-gray-500 dark:text-zinc-400">
+                                Added by {raw?.added_by || "a team member"} on {format(new Date(lead.created_at), "dd MMM yyyy")}
+                            </span>
+                        )}
                     </div>
                     <div className="flex flex-wrap gap-4 text-sm text-gray-600 dark:text-zinc-300">
                         {lead.email && <a href={`mailto:${lead.email}`} className="flex items-center gap-1.5 hover:text-blue-500"><Mail className="size-4" />{lead.email}</a>}
                         {lead.phone && <a href={`tel:${lead.phone.replace(/\s/g, "")}`} className="flex items-center gap-1.5 hover:text-blue-500"><Phone className="size-4" />{lead.phone}</a>}
+                        {lead.phone && lead.phone.replace(/\D/g, "").length >= 10 && (
+                            <a href={`https://wa.me/${lead.phone.replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 hover:text-green-600"><MessageCircle className="size-4" />WhatsApp</a>
+                        )}
                         {lead.city && <span className="flex items-center gap-1.5"><MapPin className="size-4" />{lead.city}</span>}
                         {lead.company && <span className="flex items-center gap-1.5"><Building2 className="size-4" />{lead.company}</span>}
                     </div>
@@ -105,6 +130,22 @@ const LeadDetails = () => {
 
                 {/* CRM controls */}
                 <div className="flex flex-wrap items-end gap-3">
+                    {lead.source === "manual" && (
+                        <div className="flex items-center gap-2">
+                            <button onClick={() => setShowEdit(true)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-gray-300 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800">
+                                <Pencil className="size-3.5" /> Edit
+                            </button>
+                            {confirmDelete ? (
+                                <button onClick={deleteLead} onMouseLeave={() => setConfirmDelete(false)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-red-600 text-white hover:bg-red-700">
+                                    <Trash2 className="size-3.5" /> Confirm delete
+                                </button>
+                            ) : (
+                                <button onClick={() => setConfirmDelete(true)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-red-300 text-red-600 dark:border-red-500/40 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10">
+                                    <Trash2 className="size-3.5" /> Delete
+                                </button>
+                            )}
+                        </div>
+                    )}
                     <label className="text-xs text-gray-500 dark:text-zinc-400 space-y-1">
                         <span className="block">Status</span>
                         <select value={lead.status} onChange={(e) => update({ status: e.target.value })} className={`text-sm rounded-md px-2 py-1.5 border-0 ${statusColors[lead.status]}`}>
@@ -135,7 +176,7 @@ const LeadDetails = () => {
                                 <div key={k} className={k === "message" || k === "description" ? "sm:col-span-2" : ""}>
                                     <dt className="text-xs text-gray-500 dark:text-zinc-400">{humanize(k)}</dt>
                                     <dd className="whitespace-pre-wrap break-words">
-                                        {k.endsWith("_at") ? format(new Date(v), "dd MMM yyyy, HH:mm") : String(v)}
+                                        {isDateField(k) ? format(new Date(v), "dd MMM yyyy, HH:mm") : String(v)}
                                     </dd>
                                 </div>
                             ))}
@@ -190,7 +231,7 @@ const LeadDetails = () => {
                             <div className="space-y-2">
                                 {related.map((r) => (
                                     <button key={`${r.source}:${r.source_id}`} onClick={() => navigate(`/leadDetails?source=${r.source}&id=${r.source_id}`)} className="w-full text-left p-2 rounded-md hover:bg-gray-50 dark:hover:bg-zinc-800/60 text-sm space-y-1">
-                                        <div className="flex items-center gap-2"><SourceBadge source={r.source} /><StatusBadge status={r.status} /></div>
+                                        <div className="flex items-center gap-2"><SourceBadge source={r.source} channel={r.channel} /><StatusBadge status={r.status} /></div>
                                         <p className="text-xs text-gray-500 dark:text-zinc-400 truncate">{r.summary}</p>
                                     </button>
                                 ))}
@@ -199,6 +240,11 @@ const LeadDetails = () => {
                     </div>
                 </div>
             </div>
+
+            {showEdit && (
+                <LeadFormDialog lead={raw} onClose={() => setShowEdit(false)}
+                    onSaved={() => { setShowEdit(false); setReloadKey((k) => k + 1) }} />
+            )}
 
             {showCreateTask && (
                 <CreateTaskDialog showCreateTask={showCreateTask} setShowCreateTask={setShowCreateTask}

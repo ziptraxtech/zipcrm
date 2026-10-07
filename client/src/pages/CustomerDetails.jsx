@@ -85,7 +85,7 @@ const CustomerDetails = () => {
                             {leads.map((l) => (
                                 <button key={`${l.source}:${l.source_id}`} onClick={() => navigate(`/leadDetails?source=${l.source}&id=${l.source_id}`)} className="w-full text-left p-2 rounded-md hover:bg-gray-50 dark:hover:bg-zinc-800/60 text-sm space-y-1">
                                     <div className="flex items-center gap-2">
-                                        <SourceBadge source={l.source} /><StatusBadge status={l.status} />
+                                        <SourceBadge source={l.source} channel={l.channel} /><StatusBadge status={l.status} />
                                         <span className="text-xs text-gray-500 dark:text-zinc-400 ml-auto">{format(new Date(l.created_at), "dd MMM yyyy")}</span>
                                     </div>
                                     <p className="text-xs text-gray-500 dark:text-zinc-400 truncate">{l.summary}</p>

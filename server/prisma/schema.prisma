@@ -62,6 +62,24 @@ enum LeadStatus {
     @@schema("crm")
 }
 
+// Where a manually added lead came from
+enum LeadChannel {
+    INSTAGRAM
+    WHATSAPP
+    FACEBOOK
+    LINKEDIN
+    GOOGLE_ADS
+    WEBSITE
+    REFERRAL
+    WALK_IN
+    PHONE_CALL
+    EMAIL
+    EVENT
+    OTHER
+
+    @@schema("crm")
+}
+
 enum Priority {
     LOW
     MEDIUM
@@ -86,6 +104,7 @@ model User {
     ProjectMember   ProjectMember[]
     ownedLeads      LeadState[]       @relation("LeadOwner")
     leadNotes       LeadNote[]
+    addedLeads      ManualLead[]
 
     @@schema("crm")
 }
@@ -103,8 +122,9 @@ model Workspace {
 
     members  WorkspaceMember[]
     projects Project[]
-    leads    LeadState[]
-    owner    User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+    leads       LeadState[]
+    manualLeads ManualLead[]
+    owner       User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
     @@schema("crm")
 }
@@ -227,5 +247,28 @@ model LeadNote {
     lead LeadState @relation(fields: [leadStateId], references: [id], onDelete: Cascade)
     user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+    @@schema("crm")
+}
+
+// A lead entered by a team member (Instagram DM, WhatsApp, referral, walk-in, ...).
+// Shown alongside EVChamp leads as source "manual"; its CRM state lives in LeadState like any other lead.
+model ManualLead {
+    id          Int         @id @default(autoincrement())
+    workspaceId String
+    channel     LeadChannel
+    name        String
+    email       String?
+    phone       String?
+    city        String?
+    company     String?
+    notes       String?
+    createdById String
+    createdAt   DateTime    @default(now())
+    updatedAt   DateTime    @updatedAt
+
+    workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+    createdBy User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+    @@index([workspaceId, createdAt])
     @@schema("crm")
 }

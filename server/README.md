@@ -32,7 +32,7 @@ Every zipcrm model has `@@schema("crm")`, so its `"User"` can never collide with
    npx prisma db execute --file prisma/sql/NNN_name.sql --schema prisma/schema.prisma
    ```
 
-Applied so far: `001_crm_schema.sql` (2026-10-05).
+Applied so far: `001_crm_schema.sql` (2026-10-05), `002_manual_leads.sql` (2026-10-07).
 
 ## CRM
 

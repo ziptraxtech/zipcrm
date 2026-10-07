@@ -1,13 +1,14 @@
 import prisma from "../configs/prisma.js";
 import { query } from "../crm/evchamp.js";
 import { requireCrmMember } from "../crm/access.js";
-import { ACTIVE_SOURCES, LEAD_SOURCES, isLeadSource, leadsUnionSql } from "../crm/leadSources.js";
+import { ACTIVE_SOURCES, LEAD_SOURCES, isLeadSource, leadsUnionSql, sourceRowQuery } from "../crm/leadSources.js";
 
 const LEAD_STATUSES = ['NEW', 'CONTACTED', 'QUALIFIED', 'PROPOSAL', 'WON', 'LOST'];
+export const LEAD_CHANNELS = ['INSTAGRAM', 'WHATSAPP', 'FACEBOOK', 'LINKEDIN', 'GOOGLE_ADS', 'WEBSITE', 'REFERRAL', 'WALK_IN', 'PHONE_CALL', 'EMAIL', 'EVENT', 'OTHER'];
 
-// EVChamp leads joined with this workspace's CRM state. $1 is always the workspaceId.
+// All leads visible to the workspace, joined with its CRM state. $1 is always the workspaceId.
 const leadsWithStateSql = () => `
-    WITH leads AS (${leadsUnionSql()})
+    WITH leads AS (${leadsUnionSql('$1')})
     SELECT l.*,
            COALESCE(s.status::text, 'NEW') AS status,
            s.id AS lead_state_id, s."ownerId" AS owner_id, s.value,
@@ -29,7 +30,7 @@ const parseSourceParams = (req, res) => {
 // get leads: filters are applied as bound parameters on top of the fixed union
 export const getLeads = async (req, res) => {
     try {
-        const {workspaceId, source, status, q, from, to} = req.query;
+        const {workspaceId, source, status, q, from, to, channel} = req.query;
         if (!await requireCrmMember(req, res, workspaceId)) return;
 
         const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
@@ -37,24 +38,26 @@ export const getLeads = async (req, res) => {
         const sources = source ? String(source).split(',').filter(isLeadSource) : ACTIVE_SOURCES;
         const statuses = status ? String(status).split(',').filter((s) => LEAD_STATUSES.includes(s)) : LEAD_STATUSES;
 
-        // $1 workspaceId, $2 search, $3 from, $4 to - shared by all three queries
-        const params = [workspaceId, q ? `%${q}%` : null, from || null, to || null];
+        // $1 workspaceId, $2 search, $3 from, $4 to, $5 channel - shared by all three queries
+        const params = [workspaceId, q ? `%${q}%` : null, from || null, to || null,
+                        LEAD_CHANNELS.includes(channel) ? channel : null];
         const base = `
             SELECT * FROM (${leadsWithStateSql()}) x
             WHERE ($2::text IS NULL OR x.name ILIKE $2 OR x.email ILIKE $2 OR x.phone ILIKE $2 OR x.company ILIKE $2)
               AND ($3::timestamptz IS NULL OR x.created_at >= $3::timestamptz)
-              AND ($4::timestamptz IS NULL OR x.created_at < $4::timestamptz)`;
+              AND ($4::timestamptz IS NULL OR x.created_at < $4::timestamptz)
+              AND ($5::text IS NULL OR x.channel = $5)`;
 
         const [rows, bySource, byStatus] = await Promise.all([
-            query(`${base} AND x.source = ANY($5::text[]) AND x.status = ANY($6::text[])
+            query(`${base} AND x.source = ANY($6::text[]) AND x.status = ANY($7::text[])
                    ORDER BY x.created_at DESC NULLS LAST, x.source, x.source_id DESC
-                   LIMIT $7 OFFSET $8`,
+                   LIMIT $8 OFFSET $9`,
                 [...params, sources, statuses, limit, (page - 1) * limit]),
             query(`SELECT x.source, count(*)::int AS count FROM (${base}) x
-                   WHERE x.status = ANY($5::text[]) GROUP BY x.source`,
+                   WHERE x.status = ANY($6::text[]) GROUP BY x.source`,
                 [...params, statuses]),
             query(`SELECT x.status, count(*)::int AS count FROM (${base}) x
-                   WHERE x.source = ANY($5::text[]) GROUP BY x.status`,
+                   WHERE x.source = ANY($6::text[]) GROUP BY x.status`,
                 [...params, sources]),
         ]);
 
@@ -90,7 +93,11 @@ export const getLead = async (req, res) => {
         if (!lead) return res.status(404).json({message: "Lead not found"});
 
         // table name comes from the constant registry, never from the request
-        const [raw] = await query(`SELECT * FROM ${LEAD_SOURCES[source].table} WHERE id = $1`, [sourceId]);
+        const [raw] = await query(...sourceRowQuery(source, sourceId, workspaceId));
+        if (source === 'manual') {
+            const addedBy = await prisma.user.findUnique({where: {id: raw.createdById}, select: {name: true}});
+            raw.added_by = addedBy?.name;
+        }
 
         const [state, related] = await Promise.all([
             prisma.leadState.findUnique({
@@ -124,7 +131,7 @@ export const updateLead = async (req, res) => {
         if (!parsed) return;
         const {source, sourceId} = parsed;
 
-        const [exists] = await query(`SELECT 1 FROM ${LEAD_SOURCES[source].table} WHERE id = $1`, [sourceId]);
+        const [exists] = await query(...sourceRowQuery(source, sourceId, workspaceId, '1'));
         if (!exists) return res.status(404).json({message: "Lead not found"});
 
         const data = {};
@@ -169,7 +176,7 @@ export const addLeadNote = async (req, res) => {
 
         if (!content?.trim()) return res.status(400).json({message: "Note cannot be empty"});
 
-        const [exists] = await query(`SELECT 1 FROM ${LEAD_SOURCES[source].table} WHERE id = $1`, [sourceId]);
+        const [exists] = await query(...sourceRowQuery(source, sourceId, workspaceId, '1'));
         if (!exists) return res.status(404).json({message: "Lead not found"});
 
         const leadState = await prisma.leadState.upsert({
@@ -203,6 +210,105 @@ export const getLeadStats = async (req, res) => {
             FROM (${leadsWithStateSql()}) x`, [workspaceId]);
 
         res.json({stats});
+    } catch (error) {
+        console.log(error);
+        res.status(500).json({message: error.code || error.message});
+    }
+}
+
+// ---- Manually added leads (Instagram, WhatsApp, referrals, ...) ----
+
+// Validates the editable fields of a manual lead; returns [data, error]
+const manualLeadData = (body) => {
+    const clean = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+    const data = {
+        name: clean(body.name), email: clean(body.email)?.toLowerCase() ?? null, phone: clean(body.phone),
+        city: clean(body.city), company: clean(body.company), notes: clean(body.notes), channel: body.channel,
+    };
+    if (!data.name) return [null, "Name is required"];
+    if (!data.email && !data.phone) return [null, "Add a phone number or an email"];
+    if (data.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) return [null, "Email looks invalid"];
+    if (!LEAD_CHANNELS.includes(data.channel)) return [null, "Choose where the lead came from"];
+    return [data, null];
+}
+
+// Any workspace member can edit or delete a lead they added; admins can edit or delete any
+const findOwnManualLead = async (req, res, workspaceId, member) => {
+    const id = Number(req.params.id);
+    const lead = Number.isInteger(id) ? await prisma.manualLead.findUnique({where: {id}}) : null;
+    if (!lead || lead.workspaceId !== workspaceId) {
+        res.status(404).json({message: "Lead not found"});
+        return null;
+    }
+    if (member.role !== 'ADMIN' && lead.createdById !== member.userId) {
+        res.status(403).json({message: "Only the person who added this lead or an admin can change it"});
+        return null;
+    }
+    return lead;
+}
+
+// add a lead by hand
+export const createManualLead = async (req, res) => {
+    try {
+        const {workspaceId, status, ownerId} = req.body;
+        const member = await requireCrmMember(req, res, workspaceId);
+        if (!member) return;
+
+        const [data, error] = manualLeadData(req.body);
+        if (error) return res.status(400).json({message: error});
+        if (status !== undefined && !LEAD_STATUSES.includes(status)) return res.status(400).json({message: "Invalid status"});
+        if (ownerId) {
+            const owner = await prisma.workspaceMember.findUnique({where: {userId_workspaceId: {userId: ownerId, workspaceId}}});
+            if (!owner) return res.status(400).json({message: "Owner must be a member of the workspace"});
+        }
+
+        const lead = await prisma.manualLead.create({data: {...data, workspaceId, createdById: member.userId}});
+        if ((status && status !== 'NEW') || ownerId) {
+            await prisma.leadState.create({
+                data: {workspaceId, source: 'manual', sourceId: lead.id, status: status || 'NEW', ownerId: ownerId || null},
+            });
+        }
+
+        res.json({lead, source: 'manual', sourceId: lead.id, message: "Lead added"});
+    } catch (error) {
+        console.log(error);
+        res.status(500).json({message: error.code || error.message});
+    }
+}
+
+// edit a manually added lead's details
+export const updateManualLead = async (req, res) => {
+    try {
+        const {workspaceId} = req.body;
+        const member = await requireCrmMember(req, res, workspaceId);
+        if (!member) return;
+        if (!await findOwnManualLead(req, res, workspaceId, member)) return;
+
+        const [data, error] = manualLeadData(req.body);
+        if (error) return res.status(400).json({message: error});
+
+        const lead = await prisma.manualLead.update({where: {id: Number(req.params.id)}, data});
+        res.json({lead, message: "Lead updated"});
+    } catch (error) {
+        console.log(error);
+        res.status(500).json({message: error.code || error.message});
+    }
+}
+
+// delete a manually added lead, with its CRM status and notes
+export const deleteManualLead = async (req, res) => {
+    try {
+        const {workspaceId} = req.query;
+        const member = await requireCrmMember(req, res, workspaceId);
+        if (!member) return;
+        const lead = await findOwnManualLead(req, res, workspaceId, member);
+        if (!lead) return;
+
+        // LeadState is keyed by (source, sourceId) rather than a foreign key, so remove it explicitly;
+        // its notes cascade and linked tasks are kept but unlinked
+        await prisma.leadState.deleteMany({where: {workspaceId, source: 'manual', sourceId: lead.id}});
+        await prisma.manualLead.delete({where: {id: lead.id}});
+        res.json({message: "Lead deleted"});
     } catch (error) {
         console.log(error);
         res.status(500).json({message: error.code || error.message});
