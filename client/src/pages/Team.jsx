@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
-import { UsersIcon, Search, UserPlus, Shield, Activity } from "lucide-react";
+import { UsersIcon, Search, UserPlus, Shield, Activity, UserMinus, MailX } from "lucide-react";
 import InviteMemberDialog from "../components/InviteMemberDialog";
-import { useSelector } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
+import { useAuth, useOrganization, useUser } from "@clerk/clerk-react";
+import { format } from "date-fns";
+import toast from "react-hot-toast";
+import api from "../configs/api";
+import { fetchWorkspaces } from "../features/workspaceSlice";
 
 const Team = () => {
 
@@ -11,6 +16,58 @@ const Team = () => {
     const [users, setUsers] = useState([]);
     const currentWorkspace = useSelector((state) => state?.workspace?.currentWorkspace || null);
     const projects = currentWorkspace?.projects || [];
+
+    const dispatch = useDispatch();
+    const { getToken } = useAuth();
+    const { user: me } = useUser();
+    // Only admins manage the team: they can remove Members (never Admins or themselves) and revoke invites
+    const isAdmin = currentWorkspace?.members?.some((m) => m.userId === me?.id && m.role === "ADMIN");
+    const { invitations } = useOrganization({ invitations: isAdmin ? { status: ["pending"], infinite: true } : undefined });
+    const [confirmRemoveId, setConfirmRemoveId] = useState(null);
+    const [busyId, setBusyId] = useState(null);
+
+    const canRemove = (member) => isAdmin && member.role !== "ADMIN" && member.userId !== me?.id;
+
+    const removeMember = async (member) => {
+        setBusyId(member.userId);
+        try {
+            const { data } = await api.delete(`/api/workspaces/${currentWorkspace.id}/members/${member.userId}`,
+                { headers: { Authorization: `Bearer ${await getToken()}` } });
+            toast.success(data.message);
+            dispatch(fetchWorkspaces({ getToken }));
+        } catch (error) {
+            toast.error(error?.response?.data?.message || error.message);
+        } finally {
+            setBusyId(null);
+            setConfirmRemoveId(null);
+        }
+    };
+
+    const revokeInvitation = async (invitation) => {
+        setBusyId(invitation.id);
+        try {
+            await invitation.revoke();
+            toast.success(`Invitation to ${invitation.emailAddress} revoked`);
+            invitations?.revalidate?.();
+        } catch (error) {
+            toast.error(error?.errors?.[0]?.longMessage || error.message);
+        } finally {
+            setBusyId(null);
+        }
+    };
+
+    // Two-step remove button: first click asks, second click removes
+    const removeButton = (member) => !canRemove(member) ? null : confirmRemoveId === member.userId ? (
+        <button onClick={() => removeMember(member)} onMouseLeave={() => setConfirmRemoveId(null)} disabled={busyId === member.userId}
+            className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
+            <UserMinus className="size-3.5" /> {busyId === member.userId ? "Removing..." : "Confirm remove"}
+        </button>
+    ) : (
+        <button onClick={() => setConfirmRemoveId(member.userId)}
+            className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-red-300 text-red-600 dark:border-red-500/40 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10">
+            <UserMinus className="size-3.5" /> Remove
+        </button>
+    );
 
     const filteredUsers = users.filter(
         (user) =>
@@ -33,9 +90,11 @@ const Team = () => {
                         Manage team members and their contributions
                     </p>
                 </div>
-                <button onClick={() => setIsDialogOpen(true)} className="flex items-center px-5 py-2 rounded text-sm bg-gradient-to-br from-blue-500 to-blue-600 hover:opacity-90 text-white transition" >
-                    <UserPlus className="w-4 h-4 mr-2" /> Invite Member
-                </button>
+                {isAdmin && (
+                    <button onClick={() => setIsDialogOpen(true)} className="flex items-center px-5 py-2 rounded text-sm bg-gradient-to-br from-blue-500 to-blue-600 hover:opacity-90 text-white transition" >
+                        <UserPlus className="w-4 h-4 mr-2" /> Invite Member
+                    </button>
+                )}
                 <InviteMemberDialog isDialogOpen={isDialogOpen} setIsDialogOpen={setIsDialogOpen} />
             </div>
 
@@ -123,6 +182,7 @@ const Team = () => {
                                         <th className="px-6 py-2.5 text-left font-medium text-sm">
                                             Role
                                         </th>
+                                        {isAdmin && <th className="px-6 py-2.5 text-right font-medium text-sm"></th>}
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-200 dark:divide-zinc-800">
@@ -154,6 +214,11 @@ const Team = () => {
                                                     {user.role || "User"}
                                                 </span>
                                             </td>
+                                            {isAdmin && (
+                                                <td className="px-6 py-2.5 whitespace-nowrap">
+                                                    <div className="flex justify-end">{removeButton(user)}</div>
+                                                </td>
+                                            )}
                                         </tr>
                                     ))}
                                 </tbody>
@@ -182,7 +247,7 @@ const Team = () => {
                                             </p>
                                         </div>
                                     </div>
-                                    <div>
+                                    <div className="flex items-center justify-between">
                                         <span
                                             className={`px-2 py-1 text-xs rounded-md ${user.role === "ADMIN"
                                                     ? "bg-purple-100 dark:bg-purple-500/20 text-purple-500 dark:text-purple-400"
@@ -191,6 +256,7 @@ const Team = () => {
                                         >
                                             {user.role || "User"}
                                         </span>
+                                        {removeButton(user)}
                                     </div>
                                 </div>
                             ))}
@@ -199,7 +265,28 @@ const Team = () => {
                 )}
             </div>
 
-
+            {/* Pending invitations - admins only */}
+            {isAdmin && invitations?.data?.length > 0 && (
+                <div className="max-w-4xl space-y-3">
+                    <h2 className="font-semibold text-gray-900 dark:text-white">Pending invitations</h2>
+                    <div className="rounded-md border border-gray-200 dark:border-zinc-800 divide-y divide-gray-200 dark:divide-zinc-800">
+                        {invitations.data.map((inv) => (
+                            <div key={inv.id} className="flex items-center justify-between gap-3 px-6 py-2.5">
+                                <div className="min-w-0">
+                                    <p className="text-sm text-zinc-800 dark:text-white truncate">{inv.emailAddress}</p>
+                                    <p className="text-xs text-gray-500 dark:text-zinc-400">
+                                        Invited as {inv.role === "org:admin" ? "Admin" : "Member"} · {format(new Date(inv.createdAt), "dd MMM yyyy")}
+                                    </p>
+                                </div>
+                                <button onClick={() => revokeInvitation(inv)} disabled={busyId === inv.id}
+                                    className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-gray-300 dark:border-zinc-700 text-gray-600 dark:text-zinc-300 hover:bg-gray-50 dark:hover:bg-zinc-800 disabled:opacity-50 whitespace-nowrap">
+                                    <MailX className="size-3.5" /> {busyId === inv.id ? "Revoking..." : "Revoke"}
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

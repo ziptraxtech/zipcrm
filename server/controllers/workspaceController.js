@@ -84,3 +84,48 @@ export const addMember = async (req, res) => {
         res.status(500).json({error: error.code || error.message })
     }
 }
+// Remove a member from a workspace. Only admins can remove, and only people with the MEMBER role:
+// admins can't be removed here (including yourself). Clerk owns memberships, so remove there first;
+// otherwise the Clerk sync would add the person straight back.
+export const removeMember = async (req, res) => {
+    try {
+        const {userId} = await req.auth();
+        const {workspaceId, memberId} = req.params;
+
+        const [caller, target] = await Promise.all([
+            prisma.workspaceMember.findUnique({where: {userId_workspaceId: {userId, workspaceId}}}),
+            prisma.workspaceMember.findUnique({where: {userId_workspaceId: {userId: memberId, workspaceId}}}),
+        ]);
+        if (!caller || caller.role !== "ADMIN") {
+            return res.status(403).json({message: "Only workspace admins can remove members"});
+        }
+        if (!target) {
+            return res.status(404).json({message: "Member not found in this workspace"});
+        }
+        if (target.role === "ADMIN") {
+            return res.status(403).json({message: "Admins can't be removed. Change their role to Member in Clerk first."});
+        }
+
+        const clerk = await fetch(`https://api.clerk.com/v1/organizations/${workspaceId}/memberships/${memberId}`, {
+            method: "DELETE",
+            headers: {Authorization: `Bearer ${process.env.CLERK_SECRET_KEY}`},
+        });
+        // 404: already gone from Clerk - still clean up our side
+        if (!clerk.ok && clerk.status !== 404) {
+            console.log(`Clerk membership delete failed: ${clerk.status} ${await clerk.text()}`);
+            return res.status(502).json({message: "Couldn't remove the member in Clerk. Try again."});
+        }
+
+        // Their tasks and notes stay for the record; they lose access, project memberships and owned leads
+        await prisma.$transaction([
+            prisma.projectMember.deleteMany({where: {userId: memberId, project: {workspaceId}}}),
+            prisma.leadState.updateMany({where: {workspaceId, ownerId: memberId}, data: {ownerId: null}}),
+            prisma.workspaceMember.deleteMany({where: {userId: memberId, workspaceId}}),
+        ]);
+
+        res.json({message: "Member removed"});
+    } catch (error) {
+        console.log(error);
+        res.status(500).json({message: error.code || error.message});
+    }
+}
