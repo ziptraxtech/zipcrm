@@ -5,11 +5,26 @@ import api from "../configs/api";
 
 // A failed request is reported as an error rather than an empty list, so the app can tell
 // "this person has no workspace" apart from "the API is down".
+export const SESSION_EXPIRED = 'SESSION_EXPIRED'
+
+const getWorkspaces = (token) => api.get('/api/workspaces', {headers: { Authorization: `Bearer ${token}` }})
+
 export const fetchWorkspaces = createAsyncThunk('workspace/fetchWorkspaces', async ({ getToken }, { rejectWithValue }) => {
     try {
-      const { data } = await api.get('/api/workspaces', {headers: { Authorization: `Bearer ${await getToken()}` }})
-      return data.workspaces || []
+      // No token means Clerk no longer has a usable session (expired, or signed out in another tab)
+      const token = await getToken()
+      if (!token) return rejectWithValue(SESSION_EXPIRED)
+      try {
+        return (await getWorkspaces(token)).data.workspaces || []
+      } catch (error) {
+        if (error?.response?.status !== 401) throw error
+        // A cached token can go stale; ask Clerk for a fresh one and try once more
+        const fresh = await getToken({ skipCache: true })
+        if (!fresh) return rejectWithValue(SESSION_EXPIRED)
+        return (await getWorkspaces(fresh)).data.workspaces || []
+      }
     } catch (error) {
+      if (error?.response?.status === 401) return rejectWithValue(SESSION_EXPIRED)
       return rejectWithValue(error?.response?.data?.message || error.message)
     }
   }

@@ -5,8 +5,8 @@ import { Outlet } from 'react-router-dom'
 import { useDispatch, useSelector } from 'react-redux'
 import { loadTheme } from '../features/themeSlice'
 import { Loader2Icon } from 'lucide-react'
-import {useUser, SignIn, useAuth} from '@clerk/clerk-react'
-import { fetchWorkspaces } from '../features/workspaceSlice'
+import {useUser, SignIn, useAuth, useClerk} from '@clerk/clerk-react'
+import { fetchWorkspaces, SESSION_EXPIRED } from '../features/workspaceSlice'
 import NoWorkspace from '../components/NoWorkspace'
 
 const Layout = () => {
@@ -16,6 +16,7 @@ const Layout = () => {
     const dispatch = useDispatch()
     const {user, isLoaded} = useUser()
     const {getToken} = useAuth()
+    const {signOut} = useClerk()
 
     // Initial load of theme
     useEffect(() => {
@@ -53,9 +54,15 @@ const Layout = () => {
         </div>
     )
     if (user && error && workspaces.length === 0) return (
-        <div className='flex flex-col gap-3 items-center justify-center h-screen bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300'>
-            <p className='text-sm'>Couldn't load your workspaces: {error}</p>
-            <button onClick={() => dispatch(fetchWorkspaces({getToken}))} className='px-4 py-1.5 rounded text-sm bg-gradient-to-br from-blue-500 to-blue-600 text-white hover:opacity-90'>Retry</button>
+        <div className='flex flex-col gap-3 items-center justify-center h-screen bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 p-4 text-center'>
+            <p className='text-sm'>
+                {error === SESSION_EXPIRED ? 'Your session has expired. Please sign in again.' : `Couldn't load your workspaces: ${error}`}
+            </p>
+            <div className='flex gap-3'>
+                {/* Reloading lets Clerk re-establish the session before retrying */}
+                <button onClick={() => window.location.reload()} className='px-4 py-1.5 rounded text-sm border border-gray-300 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800'>Retry</button>
+                <button onClick={() => signOut({ redirectUrl: '/' })} className='px-4 py-1.5 rounded text-sm bg-gradient-to-br from-blue-500 to-blue-600 text-white hover:opacity-90'>Sign in again</button>
+            </div>
         </div>
     )
     // Workspaces are joined by invitation only - never offer to create one here
