@@ -6,6 +6,38 @@ import sendEmail from "../configs/nodemailer.js";
 // Create a client to send and receive events
 export const inngest = new Inngest({ id: "Zip-crm" });
 
+// Create or refresh a user from a Clerk user object (webhook payload or Backend API response)
+const upsertUser = async (clerkUser) => {
+    const primary = clerkUser.email_addresses?.find((e) => e.id === clerkUser.primary_email_address_id) || clerkUser.email_addresses?.[0]
+    const data = {
+        email: primary?.email_address,
+        name: [clerkUser.first_name, clerkUser.last_name].filter(Boolean).join(' ') || clerkUser.username || 'Unnamed user',
+        image: clerkUser.image_url || '',
+    }
+    await prisma.user.upsert({where: {id: clerkUser.id}, create: {id: clerkUser.id, ...data}, update: data})
+}
+
+// Add or update a workspace membership. Clerk can deliver membership events before (or without)
+// user.created for someone who signed up through an invite link, so fetch the user if it's missing.
+const ensureUser = async (userId) => {
+    if (await prisma.user.findUnique({where: {id: userId}})) return
+    const res = await fetch(`https://api.clerk.com/v1/users/${userId}`, {
+        headers: {Authorization: `Bearer ${process.env.CLERK_SECRET_KEY}`}
+    })
+    if (!res.ok) throw new Error(`Clerk user ${userId}: ${res.status}`)
+    await upsertUser(await res.json())
+}
+
+const upsertMembership = async (userId, workspaceId, clerkRole) => {
+    await ensureUser(userId)
+    const role = clerkRole === 'org:admin' ? 'ADMIN' : 'MEMBER'
+    await prisma.workspaceMember.upsert({
+        where: {userId_workspaceId: {userId, workspaceId}},
+        create: {userId, workspaceId, role},
+        update: {role},
+    })
+}
+
 
 // Inngest function to save user data to a database
 const syncUserCreation = inngest.createFunction(
@@ -13,14 +45,7 @@ const syncUserCreation = inngest.createFunction(
     {event: 'clerk/user.created'},
     async ({event})=>{
         const {data} = event
-        await prisma.user.create({
-            data: {
-                id: data.id,
-                email: data?.email_addresses[0]?.email_address,
-                name: [data?.first_name, data?.last_name].filter(Boolean).join(' ') || data?.username || 'Unnamed user',
-                image: data?.image_url,
-            }
-        })
+        await upsertUser(data)
     }
 )
 
@@ -64,24 +89,13 @@ const syncWorkspaceCreation = inngest.createFunction(
     {event: 'clerk/organization.created'},
     async ({event}) => {
         const {data} = event;
-        await prisma.workspace.create({
-            data: {
-                id: data.id,
-                name: data.name,
-                slug: data.slug,
-                ownerId: data.created_by,
-                image_url: data.image_url
-            }
-        })
+        // The creator must exist before the workspace can reference them as owner
+        await ensureUser(data.created_by)
+        const workspace = {name: data.name, slug: data.slug || data.id, ownerId: data.created_by, image_url: data.image_url || ''}
+        await prisma.workspace.upsert({where: {id: data.id}, create: {id: data.id, ...workspace}, update: workspace})
 
-        // Add creator as ADMIN member
-        await prisma.workspaceMember.create({
-            data: {
-                userId: data.created_by,
-                workspaceId: data.id,
-                role: "ADMIN"
-            }
-        })
+        // Add creator as ADMIN member (organizationMembership.created may already have done this)
+        await upsertMembership(data.created_by, data.id, 'org:admin')
     }
 )
 
@@ -128,12 +142,27 @@ const syncWorkspaceMemberCreation = inngest.createFunction(
     {event: 'clerk/organizationInvitation.accepted'},
     async ({event}) => {
         const {data} = event;
-        await prisma.workspaceMember.create({
-            data: {
-                userId: data.user_id,
-                workspaceId: data.organization_id,
-                role: String(data.role_name).toUpperCase(),
-            }
+        await upsertMembership(data.user_id, data.organization_id, data.role)
+    }
+)
+
+// Memberships added, changed or removed anywhere (zipcrm invites, the Clerk dashboard, Clerk's API)
+const syncMembershipUpsert = inngest.createFunction(
+    {id: 'sync-membership-from-clerk'},
+    [{event: 'clerk/organizationMembership.created'}, {event: 'clerk/organizationMembership.updated'}],
+    async ({event}) => {
+        const {data} = event;
+        await upsertMembership(data.public_user_data.user_id, data.organization.id, data.role)
+    }
+)
+
+const syncMembershipDeletion = inngest.createFunction(
+    {id: 'delete-membership-with-clerk'},
+    {event: 'clerk/organizationMembership.deleted'},
+    async ({event}) => {
+        const {data} = event;
+        await prisma.workspaceMember.deleteMany({
+            where: {userId: data.public_user_data.user_id, workspaceId: data.organization.id}
         })
     }
 )
@@ -215,6 +244,8 @@ const sendTaskAssignmentEmail = inngest.createFunction(
 
 // Create an empty array where we'll export future Inngest functions
 export const functions = [
+    syncMembershipUpsert,
+    syncMembershipDeletion,
     syncUserCreation, 
     syncUserDeletion, 
     syncUserUpdation, 
