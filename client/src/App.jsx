@@ -6,6 +6,10 @@ import Projects from "./pages/Projects";
 import Team from "./pages/Team";
 import ProjectDetails from "./pages/ProjectDetails";
 import TaskDetails from "./pages/TaskDetails";
+import Leads from "./pages/Leads";
+import LeadDetails from "./pages/LeadDetails";
+import Customers from "./pages/Customers";
+import CustomerDetails from "./pages/CustomerDetails";
 
 const App = () => {
     return (
@@ -18,6 +22,10 @@ const App = () => {
                     <Route path="projects" element={<Projects />} />
                     <Route path="projectsDetail" element={<ProjectDetails />} />
                     <Route path="taskDetails" element={<TaskDetails />} />
+                    <Route path="leads" element={<Leads />} />
+                    <Route path="leadDetails" element={<LeadDetails />} />
+                    <Route path="customers" element={<Customers />} />
+                    <Route path="customerDetails" element={<CustomerDetails />} />
                 </Route>
             </Routes>
         </>

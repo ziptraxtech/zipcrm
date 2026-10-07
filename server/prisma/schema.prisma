@@ -1,23 +1,34 @@
+// ⚠️ SHARED DATABASE: this Neon database also holds other apps' tables in the `public` schema -
+// EVChamp (users, contact_submissions, plan_purchases, ...) and Zeflash ("User", "Credit", "Payment", ...).
+// All zipcrm tables live in the separate `crm` schema (@@schema("crm") on every model and enum),
+// so names like "User" never collide with Zeflash's.
+// NEVER run `prisma db push`, `prisma migrate dev` or `prisma migrate reset` against it.
+// Apply changes with the additive SQL in prisma/sql/ (see server/README.md).
+
 generator client {
     provider        = "prisma-client-js"
-    previewFeatures = ["driverAdapters"]
 }
 
 datasource db {
     provider  = "postgresql"
     url       = env("DATABASE_URL")
     directUrl = env("DIRECT_URL")
+    schemas   = ["crm"]
 }
 
 enum WorkspaceRole {
     ADMIN
     MEMBER
+
+    @@schema("crm")
 }
 
 enum TaskStatus {
     TODO
     IN_PROGRESS
     DONE
+
+    @@schema("crm")
 }
 
 enum TaskType {
@@ -26,6 +37,8 @@ enum TaskType {
     FEATURE
     IMPROVEMENT
     OTHER
+
+    @@schema("crm")
 }
 
 enum ProjectStatus {
@@ -34,12 +47,27 @@ enum ProjectStatus {
     COMPLETED
     ON_HOLD
     CANCELLED
+
+    @@schema("crm")
+}
+
+enum LeadStatus {
+    NEW
+    CONTACTED
+    QUALIFIED
+    PROPOSAL
+    WON
+    LOST
+
+    @@schema("crm")
 }
 
 enum Priority {
     LOW
     MEDIUM
     HIGH
+
+    @@schema("crm")
 }
 
 model User {
@@ -56,6 +84,10 @@ model User {
     comments        Comment[]
     ownedWorkspaces Workspace[]
     ProjectMember   ProjectMember[]
+    ownedLeads      LeadState[]       @relation("LeadOwner")
+    leadNotes       LeadNote[]
+
+    @@schema("crm")
 }
 
 model Workspace {
@@ -71,7 +103,10 @@ model Workspace {
 
     members  WorkspaceMember[]
     projects Project[]
+    leads    LeadState[]
     owner    User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+    @@schema("crm")
 }
 
 model WorkspaceMember {
@@ -84,6 +119,8 @@ model WorkspaceMember {
     workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
     @@unique([userId, workspaceId]) // prevent duplicate membership
+
+    @@schema("crm")
 }
 
 model Project {
@@ -104,6 +141,8 @@ model Project {
     owner     User      @relation("ProjectOwner", fields: [team_lead], references: [id], onDelete: Cascade)
     workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
     tasks     Task[]
+
+    @@schema("crm")
 }
 
 model ProjectMember {
@@ -114,6 +153,8 @@ model ProjectMember {
     project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
     @@unique([userId, projectId]) // prevent duplicate membership
+
+    @@schema("crm")
 }
 
 model Task {
@@ -126,12 +167,16 @@ model Task {
     priority    Priority   @default(MEDIUM)
     assigneeId  String
     due_date    DateTime
+    leadStateId String?
     createdAt   DateTime   @default(now())
     updatedAt   DateTime   @updatedAt
 
-    project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-    assignee User      @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: Cascade)
+    project  Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+    assignee User       @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: Cascade)
+    lead     LeadState? @relation(fields: [leadStateId], references: [id], onDelete: SetNull)
     comments Comment[]
+
+    @@schema("crm")
 }
 
 model Comment {
@@ -143,4 +188,44 @@ model Comment {
 
     user User @relation(fields: [userId], references: [id], onDelete: Cascade)
     task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+    @@schema("crm")
+}
+
+// CRM state layered over a read-only EVChamp row, identified by (source, sourceId).
+// `source` is a key from server/crm/leadSources.js. Rows are created on first change;
+// a lead without a row is NEW.
+model LeadState {
+    id          String     @id @default(uuid())
+    workspaceId String
+    source      String
+    sourceId    Int
+    status      LeadStatus @default(NEW)
+    ownerId     String?
+    value       Int? // expected deal value in rupees
+    createdAt   DateTime   @default(now())
+    updatedAt   DateTime   @updatedAt
+
+    workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+    owner     User?      @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+    notes     LeadNote[]
+    tasks     Task[]
+
+    @@unique([workspaceId, source, sourceId])
+    @@index([workspaceId, status])
+
+    @@schema("crm")
+}
+
+model LeadNote {
+    id          String   @id @default(uuid())
+    leadStateId String
+    userId      String
+    content     String
+    createdAt   DateTime @default(now())
+
+    lead LeadState @relation(fields: [leadStateId], references: [id], onDelete: Cascade)
+    user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@schema("crm")
 }

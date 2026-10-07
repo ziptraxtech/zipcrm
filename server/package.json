@@ -6,7 +6,9 @@
   "scripts": {
     "postinstall": "npx prisma generate",
     "start": "prisma generate && node server.js",
-    "server": "nodemon server.js"
+    "server": "nodemon server.js",
+    "test": "node --experimental-test-module-mocks --test \"test/**/*.test.mjs\"",
+    "sync:clerk": "node scripts/syncClerk.js"
   },
   "keywords": [],
   "author": "",
@@ -25,6 +27,7 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/ws": "^8.18.1",
     "nodemon": "^3.1.10",
     "prisma": "^6.18.0"

@@ -1,6 +1,7 @@
 import { Plus } from 'lucide-react'
 import { useState } from 'react'
 import StatsGrid from '../components/StatsGrid'
+import CrmStats from '../components/crm/CrmStats'
 import ProjectOverview from '../components/ProjectOverview'
 import RecentActivity from '../components/RecentActivity'
 import TasksSummary from '../components/TasksSummary'
@@ -27,6 +28,7 @@ const Dashboard = () => {
                 <CreateProjectDialog isDialogOpen={isDialogOpen} setIsDialogOpen={setIsDialogOpen} />
             </div>
 
+            <CrmStats />
             <StatsGrid />
 
             <div className="grid lg:grid-cols-3 gap-8">

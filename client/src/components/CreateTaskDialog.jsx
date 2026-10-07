@@ -7,17 +7,21 @@ import api from "../configs/api";
 import {addTask} from  "../features/workspaceSlice";
 import toast from "react-hot-toast";
 
-export default function CreateTaskDialog({ showCreateTask, setShowCreateTask, projectId }) {
+// projectId fixes the project; without it (e.g. from a CRM lead) the user picks one.
+// leadStateId links the new task to a lead; onCreated receives the created task.
+export default function CreateTaskDialog({ showCreateTask, setShowCreateTask, projectId: fixedProjectId, leadStateId, defaultTitle = "", onCreated }) {
 
     const {getToken} = useAuth()
     const dispatch = useDispatch()
     const currentWorkspace = useSelector((state) => state.workspace?.currentWorkspace || null);
+    const [pickedProjectId, setPickedProjectId] = useState("");
+    const projectId = fixedProjectId || pickedProjectId;
     const project = currentWorkspace?.projects.find((p) => p.id === projectId);
     const teamMembers = project?.members || [];
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [formData, setFormData] = useState({
-        title: "",
+        title: defaultTitle,
         description: "",
         type: "TASK",
         status: "TODO",
@@ -30,7 +34,7 @@ export default function CreateTaskDialog({ showCreateTask, setShowCreateTask, pr
         e.preventDefault();
         setIsSubmitting(true)
         try{
-            const {data} = await api.post('/api/tasks', {...formData, workspace: currentWorkspace.id, projectId}, {headers: {Authorization: `Bearer ${await getToken()}`}})
+            const {data} = await api.post('/api/tasks', {...formData, workspace: currentWorkspace.id, projectId, leadStateId}, {headers: {Authorization: `Bearer ${await getToken()}`}})
             setShowCreateTask(false)
             setFormData({
                 title: "",
@@ -43,6 +47,7 @@ export default function CreateTaskDialog({ showCreateTask, setShowCreateTask, pr
             })
             toast.success(data.message)
             dispatch(addTask(data.task))
+            onCreated?.(data.task)
         } catch (error){
             toast.error(error?.response?.data?.message || error.message);
         }finally{
@@ -57,6 +62,19 @@ export default function CreateTaskDialog({ showCreateTask, setShowCreateTask, pr
                 <h2 className="text-xl font-bold mb-4">Create New Task</h2>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
+                    {/* Project - only when not opened from a project */}
+                    {!fixedProjectId && (
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium">Project</label>
+                            <select value={pickedProjectId} onChange={(e) => { setPickedProjectId(e.target.value); setFormData({ ...formData, assigneeId: "" }) }} className="w-full rounded dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 px-3 py-2 text-zinc-900 dark:text-zinc-200 text-sm mt-1" required >
+                                <option value="">Select a project</option>
+                                {currentWorkspace?.projects.map((p) => (
+                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
+
                     {/* Title */}
                     <div className="space-y-1">
                         <label htmlFor="title" className="text-sm font-medium">Title</label>

@@ -3,13 +3,15 @@ import { NavLink } from 'react-router-dom'
 import MyTasksSidebar from './MyTasksSidebar'
 import ProjectSidebar from './ProjectsSidebar'
 import WorkspaceDropdown from './WorkspaceDropdown'
-import { FolderOpenIcon, LayoutDashboardIcon, SettingsIcon, UsersIcon } from 'lucide-react'
+import { ContactIcon, FolderOpenIcon, InboxIcon, LayoutDashboardIcon, SettingsIcon, UsersIcon } from 'lucide-react'
 import { useClerk } from '@clerk/clerk-react'
 
 const Sidebar = ({ isSidebarOpen, setIsSidebarOpen }) => {
     const {openUserProfile} = useClerk()
     const menuItems = [
         { name: 'Dashboard', href: '/', icon: LayoutDashboardIcon },
+        { name: 'Leads', href: '/leads', icon: InboxIcon },
+        { name: 'Customers', href: '/customers', icon: ContactIcon },
         { name: 'Projects', href: '/projects', icon: FolderOpenIcon },
         { name: 'Team', href: '/team', icon: UsersIcon },
     ]
