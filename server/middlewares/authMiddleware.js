@@ -13,7 +13,11 @@ export const protect = async (req, res, next) => {
         const { userId } = await req.auth();
 
         if (!userId){
-            return res.status(401).json({ message: "Unauthorized" });
+            // clerkMiddleware records why it treated the request as signed out (expired, wrong instance, ...)
+            const reason = res.getHeader('x-clerk-auth-reason');
+            const detail = res.getHeader('x-clerk-auth-message');
+            console.log(`401 ${req.method} ${req.path}: ${reason || 'no token'} - ${detail || ''}`);
+            return res.status(401).json({ message: reason ? `Unauthorized (${reason})` : "Unauthorized" });
         }
 
         return next()
