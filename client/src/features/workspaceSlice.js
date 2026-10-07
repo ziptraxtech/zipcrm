@@ -1,17 +1,16 @@
 import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
-import { dummyWorkspaces } from "../assets/assets";
 import api from "../configs/api";
 
 
 
-export const fetchWorkspaces = createAsyncThunk('workspace/fetchWorkspaces', async ({ getToken }) => {
+// A failed request is reported as an error rather than an empty list, so the app can tell
+// "this person has no workspace" apart from "the API is down".
+export const fetchWorkspaces = createAsyncThunk('workspace/fetchWorkspaces', async ({ getToken }, { rejectWithValue }) => {
     try {
-      const token = await getToken();
-      const { data } = await api.get('/api/workspaces', {headers: { Authorization: `Bearer ${await getToken()}` }}) 
+      const { data } = await api.get('/api/workspaces', {headers: { Authorization: `Bearer ${await getToken()}` }})
       return data.workspaces || []
     } catch (error) {
-      console.log(error?.response?.data?.message || error.message)
-      return []
+      return rejectWithValue(error?.response?.data?.message || error.message)
     }
   }
 );
@@ -20,6 +19,8 @@ const initialState = {
     workspaces: [],
     currentWorkspace: null,
     loading: false,
+    loaded: false, // true once the first fetch has finished, successfully or not
+    error: null,
 };
 
 const workspaceSlice = createSlice({
@@ -122,9 +123,11 @@ const workspaceSlice = createSlice({
     extraReducers: (builder) => { 
         builder.addCase(fetchWorkspaces.pending, (state) => {
             state.loading = true
+            state.error = null
         });
         builder.addCase(fetchWorkspaces.fulfilled, (state, action) => {
             state.workspaces = action.payload;
+            state.currentWorkspace = null; // never carry over a previous account's selection
             if(action.payload.length > 0){
                 const localStorageCurrentWorkspaceId = localStorage.getItem('currentWorkspaceId');
                 if(localStorageCurrentWorkspaceId){
@@ -139,9 +142,12 @@ const workspaceSlice = createSlice({
                 }
             }
             state.loading = false
+            state.loaded = true
         });
-        builder.addCase(fetchWorkspaces.rejected, (state) => {
+        builder.addCase(fetchWorkspaces.rejected, (state, action) => {
             state.loading = false
+            state.loaded = true
+            state.error = action.payload || action.error.message
         });
     }
 });
