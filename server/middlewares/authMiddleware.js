@@ -16,7 +16,13 @@ export const protect = async (req, res, next) => {
             // clerkMiddleware records why it treated the request as signed out (expired, wrong instance, ...)
             const reason = res.getHeader('x-clerk-auth-reason');
             const detail = res.getHeader('x-clerk-auth-message');
-            console.log(`401 ${req.method} ${req.path}: ${reason || 'no token'} - ${detail || ''}`);
+            // Shape of what the browser sent, never the values: is there a bearer token, and which cookies
+            const header = req.headers.authorization || '';
+            const token = header.replace(/^Bearer\s+/i, '');
+            const sent = !header ? 'no Authorization header'
+                : `Authorization "${header.slice(0, 7)}…" token length ${token.length}, looks like JWT: ${token.split('.').length === 3}`;
+            const cookies = (req.headers.cookie || '').split(';').map((c) => c.split('=')[0].trim()).filter(Boolean).join(',') || 'none';
+            console.log(`401 ${req.method} ${req.originalUrl.split('?')[0]}: ${reason || 'no token'} - ${detail || ''} | ${sent} | cookies: ${cookies}`);
             return res.status(401).json({ message: reason ? `Unauthorized (${reason})` : "Unauthorized" });
         }
 
